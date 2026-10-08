@@ -1,0 +1,12 @@
+* text=auto
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.icns binary
+*.woff2 binary
+*.onnx binary
+*.pt binary
+
+src/renderer/assets/fonts/*.woff2 linguist-vendored=true

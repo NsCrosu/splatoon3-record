@@ -1,0 +1,109 @@
+name: Release
+
+# 发布 Release 时自动构建各平台安装包并挂到该 Release 上；测试由 CI 工作流负责，这里不跑测试
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 已存在的 Release 标签，填写后把安装包上传到该 Release（留空则只产出工作流产物）
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Package ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    # release 事件取触发标签（release 事件的 ref 就是标签），手动触发取输入；两者都没有就只产出工作流产物
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'release' && github.ref_name || inputs.tag }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-2022
+            command: dist:win
+            artifact: windows-x64
+            installer: release/splatoon3Record*x64Setup.exe
+
+          # macos-13 已下线，Intel 产物改用最后一个 x86_64 镜像 macos-15-intel
+          - name: macOS Intel x64
+            os: macos-15-intel
+            command: dist:mac
+            artifact: macos-x64
+            installer: release/splatoon3Record*-mac-x64.dmg
+
+          - name: macOS Apple Silicon arm64
+            os: macos-14
+            command: dist:mac
+            artifact: macos-arm64
+            installer: release/splatoon3Record*-mac-arm64.dmg
+
+          - name: Linux x64
+            os: ubuntu-22.04
+            command: dist:linux
+            artifact: linux-x64
+            installer: release/splatoon3Record*-linux-x64.AppImage
+
+          - name: Linux arm64
+            os: ubuntu-24.04-arm
+            command: dist:linux
+            artifact: linux-arm64
+            installer: release/splatoon3Record*-linux-arm64.AppImage
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG || github.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # 手动触发填了标签时同样校验，避免安装包版本号与 Release 对不上
+      - name: Check release tag matches version
+        if: env.RELEASE_TAG != ''
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [ "$RELEASE_TAG" != "$version" ] && [ "$RELEASE_TAG" != "v$version" ]; then
+            echo "Release tag $RELEASE_TAG does not match package.json version $version"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Prepare build tools
+        run: npm run build:ffmpeg && npm run build:runtime
+
+      - name: Build installer
+        run: npm run ${{ matrix.command }}
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.installer }}
+          if-no-files-found: error
+          retention-days: 30
+
+      # 只追加安装包资产，不改 Release 的标题与发布说明
+      - name: Upload installer to Release
+        if: env.RELEASE_TAG != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$RELEASE_TAG" ${{ matrix.installer }} --clobber
